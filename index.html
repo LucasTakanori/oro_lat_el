@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tongue ROM Dataset Collection</title>
+<style>
+:root {
+  --bg: #0b1019;
+  --fg: #e6edf3;
+  --muted: #8b95a7;
+  --accent: #22c55e;
+  --accent-bright: #4ade80;
+  --warn: #f59e0b;
+  --err: #ef4444;
+  --card: #161c2a;
+  --border: #2a3142;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+#app {
+  width: 100%;
+  max-width: 720px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.screen { display: none; flex-direction: column; gap: 16px; }
+.screen.active { display: flex; }
+h1 { font-size: 22px; line-height: 1.2; }
+h2 { font-size: 16px; color: var(--muted); font-weight: 500; }
+p { line-height: 1.5; color: var(--muted); }
+label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+button {
+  background: var(--accent);
+  color: #0b1019;
+  border: none;
+  border-radius: 8px;
+  padding: 14px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+button:hover { background: var(--accent-bright); }
+button:active { transform: translateY(1px); }
+button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+button.secondary:hover { background: var(--border); }
+button.warn { background: var(--warn); color: #0b1019; }
+button.warn:hover { background: #fbbf24; }
+input[type="text"] {
+  background: #0b1019;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 16px;
+  width: 100%;
+  font-family: inherit;
+}
+input[type="text"]:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+.task-counter {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+.canvas-stack {
+  position: relative;
+  width: 100%;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+}
+.canvas-stack video,
+.canvas-stack canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: scaleX(-1);
+}
+.canvas-stack video { object-fit: cover; background: #000; }
+#overlay-canvas { pointer-events: none; }
+.guidance {
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+  min-height: 22px;
+}
+.progress {
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 100ms linear;
+}
+.progress-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  mix-blend-mode: difference;
+}
+.row { display: flex; gap: 12px; }
+.row > button { flex: 1; }
+.label-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px;
+}
+.label-buttons button {
+  padding: 18px 12px;
+  font-size: 20px;
+}
+#preview-video {
+  width: 100%;
+  border-radius: 8px;
+  background: #000;
+  max-height: 50vh;
+}
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--err);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: 90vw;
+  text-align: center;
+  display: none;
+  z-index: 1000;
+}
+.toast.show { display: block; }
+.success { color: var(--accent); }
+.center { text-align: center; }
+.note {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <section id="screen-welcome" class="screen active">
+    <div class="card">
+      <h1>Tongue ROM Dataset Collection</h1>
+      <p>This tool guides the subject through 3 short tongue movement tasks (lateralization right, lateralization left, elevation). Each task takes about 30 seconds.</p>
+      <div>
+        <label for="name-input">Name</label>
+        <input type="text" id="name-input" placeholder="e.g. Jane Doe" maxlength="64" autocomplete="off">
+      </div>
+      <button id="start-btn">Start session</button>
+      <p class="note">Captures upload to the server. Make sure you have good lighting and the subject's face fits the frame.</p>
+    </div>
+  </section>
+
+  <section id="screen-instructions" class="screen">
+    <div class="card">
+      <div class="task-counter" id="instr-counter">Task 1 of 3</div>
+      <h1 id="instr-name">Task</h1>
+      <p id="instr-text">Instruction.</p>
+      <div class="row">
+        <button id="ready-btn">I'm ready</button>
+        <button class="secondary" id="cancel-instr-btn">Back</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="screen-live" class="screen">
+    <div class="card">
+      <div class="task-counter" id="live-counter">Task 1 of 3</div>
+      <h1 id="live-name">Task</h1>
+      <div class="canvas-stack" id="canvas-stack">
+        <video id="cam-video" playsinline autoplay muted></video>
+        <canvas id="overlay-canvas"></canvas>
+      </div>
+      <div class="guidance" id="guidance-text">Position your face in the frame.</div>
+      <div class="progress">
+        <div class="progress-fill" id="progress-fill"></div>
+        <div class="progress-text" id="progress-text">0.0s / 2.0s</div>
+      </div>
+      <div class="row">
+        <button id="manual-capture-btn" class="warn">Capture now</button>
+        <button class="secondary" id="cancel-live-btn">Cancel</button>
+      </div>
+      <p class="note">If the auto-detector struggles (poor light, dark tongue), use "Capture now" once the subject is at peak position.</p>
+    </div>
+  </section>
+
+  <section id="screen-label" class="screen">
+    <div class="card">
+      <div class="task-counter" id="label-counter">Task 1 of 3</div>
+      <h1 id="label-name">Task</h1>
+      <video id="preview-video" autoplay loop muted playsinline controls></video>
+      <p>Auto-detector score: <strong id="label-auto-score">0.00</strong></p>
+      <div>
+        <label>Assign clinical score (Lazarus rubric)</label>
+        <div class="label-buttons" id="label-buttons-row"></div>
+      </div>
+      <button class="secondary" id="recapture-btn">Recapture (discard this clip)</button>
+    </div>
+  </section>
+
+  <section id="screen-saved" class="screen">
+    <div class="card center">
+      <h1 class="success">Saved</h1>
+      <p id="saved-text">Capture saved to the server.</p>
+      <button id="next-task-btn">Next task</button>
+    </div>
+  </section>
+
+  <section id="screen-done" class="screen">
+    <div class="card center">
+      <h1 class="success">All tasks complete</h1>
+      <p id="done-text">All 3 tasks recorded.</p>
+      <button id="restart-btn">Start new participant</button>
+    </div>
+  </section>
+
+  <section id="screen-error" class="screen">
+    <div class="card">
+      <h1>Something went wrong</h1>
+      <p id="error-text">Error.</p>
+      <button id="error-back-btn" class="secondary">Back to start</button>
+    </div>
+  </section>
+
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script type="module">
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  DrawingUtils
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+const LM = {
+  R_COMMISSURE: 61,
+  L_COMMISSURE: 291,
+  UPPER_LIP_CENTER: 13,
+  LOWER_LIP_CENTER: 14,
+  UPPER_LIP_TOP: 0,
+  LIP_LEFT_OUTER: 78,
+  LIP_RIGHT_OUTER: 308,
+  NOSE_TIP: 1,
+  CHIN: 152,
+};
+
+const TASKS = [
+  {
+    id: 'latR',
+    name: 'Lateralization — Right',
+    instruction: "Open your mouth and move the tongue as far as possible toward the right corner of the mouth (subject's own right). Hold the maximum position.",
+    direction: 'right',
+    holdThreshold: 0.80,
+    dropThreshold: 0.55,
+    score: (lm, tip, w, h) => scoreLateralization(lm, tip, 'RIGHT', w),
+  },
+  {
+    id: 'latL',
+    name: 'Lateralization — Left',
+    instruction: "Open your mouth and move the tongue as far as possible toward the left corner of the mouth (subject's own left). Hold the maximum position.",
+    direction: 'left',
+    holdThreshold: 0.80,
+    dropThreshold: 0.55,
+    score: (lm, tip, w, h) => scoreLateralization(lm, tip, 'LEFT', w),
+  },
+  {
+    id: 'elev',
+    name: 'Elevation',
+    instruction: "Open your mouth and lift the tongue tip up to touch the roof of the mouth, just behind the upper teeth. Hold the maximum position.",
+    direction: 'up',
+    holdThreshold: 0.75,
+    dropThreshold: 0.50,
+    score: (lm, tip, w, h) => scoreElevation(lm, tip, h),
+  },
+];
+
+const LABEL_SCALES = {
+  latR: [0, 25, 50, 100],
+  latL: [0, 25, 50, 100],
+  elev: [0, 50, 100],
+};
+
+const RUBRIC_TOOLTIPS = {
+  latR: { 0: "totally impaired — no movement", 25: "severely impaired — >50% reduction", 50: "mild-moderate — <50% reduction", 100: "normal — touches commissure" },
+  latL: { 0: "totally impaired — no movement", 25: "severely impaired — >50% reduction", 50: "mild-moderate — <50% reduction", 100: "normal — touches commissure" },
+  elev: { 0: "severely impaired — no visible elevation", 50: "moderately impaired — elevation, no contact", 100: "normal — tip contacts upper alveolar ridge" },
+};
+
+const TONGUE_HSV = {
+  H1_MIN: 330, H1_MAX: 360,
+  H2_MIN: 0,   H2_MAX: 20,
+  S_MIN: 0.25,
+  V_MIN: 0.35, V_MAX: 0.90,
+};
+
+let participantName = null;
+let currentTaskIdx = 0;
+let videoStream = null;
+let videoEl = null;
+let canvasStackEl = null;
+let overlayCanvas = null;
+let overlayCtx = null;
+let tongueCanvas = null;
+let tongueCtx = null;
+let faceLandmarker = null;
+let drawingUtils = null;
+let frameLoopActive = false;
+let frameCounter = 0;
+let lastTongueTip = null;
+let lastAutoScore = 0;
+let holdDetector = null;
+let mediaRecorder = null;
+let mediaRecorderChunks = [];
+let landmarkBuffer = [];
+let captureInProgress = false;
+let capturedClipBlob = null;
+let capturedFrames = null;
+let capturedAutoScore = 0;
+
+async function initMediaPipe() {
+  const fileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+  );
+  faceLandmarker = await FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minFacePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+}
+
+async function initCamera() {
+  videoStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false,
+  });
+  videoEl.srcObject = videoStream;
+  await new Promise((resolve, reject) => {
+    videoEl.onloadedmetadata = resolve;
+    videoEl.onerror = reject;
+  });
+  await videoEl.play();
+  const w = videoEl.videoWidth || 640;
+  const h = videoEl.videoHeight || 480;
+  overlayCanvas.width = w;
+  overlayCanvas.height = h;
+  canvasStackEl.style.aspectRatio = `${w} / ${h}`;
+  drawingUtils = new DrawingUtils(overlayCtx);
+}
+
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d > 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : d / max;
+  return [h, s, max];
+}
+
+function isTongueColor(r, g, b) {
+  const [h, s, v] = rgbToHsv(r, g, b);
+  if (s < TONGUE_HSV.S_MIN) return false;
+  if (v < TONGUE_HSV.V_MIN || v > TONGUE_HSV.V_MAX) return false;
+  return (h >= TONGUE_HSV.H1_MIN && h <= TONGUE_HSV.H1_MAX) ||
+         (h >= TONGUE_HSV.H2_MIN && h <= TONGUE_HSV.H2_MAX);
+}
+
+function findTongueTip(landmarks, taskDirection) {
+  const W = videoEl.videoWidth, H = videoEl.videoHeight;
+  const idx = [LM.R_COMMISSURE, LM.L_COMMISSURE, LM.UPPER_LIP_CENTER, LM.LOWER_LIP_CENTER, LM.LIP_LEFT_OUTER, LM.LIP_RIGHT_OUTER];
+  const xs = idx.map(i => landmarks[i].x * W);
+  const ys = idx.map(i => landmarks[i].y * H);
+  const pad = 30;
+  const x0 = Math.max(0, Math.min(...xs) - pad);
+  const y0 = Math.max(0, Math.min(...ys) - pad);
+  const x1 = Math.min(W, Math.max(...xs) + pad);
+  const y1 = Math.min(H, Math.max(...ys) + pad);
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (w < 8 || h < 8) return null;
+
+  const TW = 160;
+  const TH = Math.max(8, Math.round(h * (TW / w)));
+  tongueCanvas.width = TW;
+  tongueCanvas.height = TH;
+  tongueCtx.drawImage(videoEl, x0, y0, w, h, 0, 0, TW, TH);
+  const img = tongueCtx.getImageData(0, 0, TW, TH);
+  const data = img.data;
+
+  const mask = new Uint8Array(TW * TH);
+  for (let i = 0; i < TW * TH; i++) {
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    if (isTongueColor(r, g, b)) mask[i] = 1;
+  }
+
+  const visited = new Uint8Array(TW * TH);
+  let bestSize = 0;
+  let bestPoints = null;
+  for (let i = 0; i < TW * TH; i++) {
+    if (!mask[i] || visited[i]) continue;
+    const stack = [i];
+    visited[i] = 1;
+    const points = [];
+    while (stack.length) {
+      const p = stack.pop();
+      const px = p % TW;
+      const py = (p - px) / TW;
+      points.push([px, py]);
+      const neigh = [p + 1, p - 1, p + TW, p - TW];
+      const okx = [px < TW - 1, px > 0, true, true];
+      for (let k = 0; k < 4; k++) {
+        const ni = neigh[k];
+        if (ni < 0 || ni >= TW * TH || !okx[k]) continue;
+        if (mask[ni] && !visited[ni]) {
+          visited[ni] = 1;
+          stack.push(ni);
+        }
+      }
+    }
+    if (points.length > bestSize) {
+      bestSize = points.length;
+      bestPoints = points;
+    }
+  }
+
+  if (!bestPoints || bestSize < 30) return null;
+
+  let extreme = bestPoints[0];
+  for (const p of bestPoints) {
+    if (taskDirection === 'right') {
+      if (p[0] < extreme[0]) extreme = p;
+    } else if (taskDirection === 'left') {
+      if (p[0] > extreme[0]) extreme = p;
+    } else if (taskDirection === 'up') {
+      if (p[1] < extreme[1]) extreme = p;
+    } else {
+      if (p[1] > extreme[1]) extreme = p;
+    }
+  }
+
+  return {
+    x: x0 + (extreme[0] / TW) * w,
+    y: y0 + (extreme[1] / TH) * h,
+  };
+}
+
+function scoreLateralization(landmarks, tongueTip, side, w) {
+  if (!tongueTip) return 0;
+  const x61 = landmarks[LM.R_COMMISSURE].x * w;
+  const x291 = landmarks[LM.L_COMMISSURE].x * w;
+  const leftImageX = Math.min(x61, x291);
+  const rightImageX = Math.max(x61, x291);
+  const center = (leftImageX + rightImageX) / 2;
+  if (side === 'RIGHT') {
+    const range = center - leftImageX;
+    if (range <= 0) return 0;
+    return Math.max(0, Math.min(1, (center - tongueTip.x) / range));
+  } else {
+    const range = rightImageX - center;
+    if (range <= 0) return 0;
+    return Math.max(0, Math.min(1, (tongueTip.x - center) / range));
+  }
+}
+
+function scoreElevation(landmarks, tongueTip, h) {
+  if (!tongueTip) return 0;
+  const upperRidgeY = landmarks[LM.UPPER_LIP_CENTER].y * h;
+  const lowerLipY = landmarks[LM.LOWER_LIP_CENTER].y * h;
+  const range = lowerLipY - upperRidgeY;
+  if (range <= 0) return 0;
+  return Math.max(0, Math.min(1, (lowerLipY - tongueTip.y) / range));
+}
+
+class HoldDetector {
+  constructor({ threshold, holdMs, dropThreshold }) {
+    this.threshold = threshold;
+    this.holdMs = holdMs;
+    this.dropThreshold = dropThreshold;
+    this.startTime = null;
+    this.state = 'IDLE';
+  }
+  update(score, nowMs) {
+    if (this.state === 'COMPLETE') return { state: 'COMPLETE', progress: 1 };
+    if (score >= this.threshold) {
+      if (this.startTime === null) this.startTime = nowMs;
+      const elapsed = nowMs - this.startTime;
+      if (elapsed >= this.holdMs) {
+        this.state = 'COMPLETE';
+        return { state: 'COMPLETE', progress: 1 };
+      }
+      this.state = 'HOLDING';
+      return { state: 'HOLDING', progress: elapsed / this.holdMs };
+    }
+    if (score < this.dropThreshold) {
+      this.startTime = null;
+      this.state = 'IDLE';
+    }
+    return {
+      state: this.state,
+      progress: this.startTime ? (nowMs - this.startTime) / this.holdMs : 0,
+    };
+  }
+}
+
+function startFrameLoop() {
+  frameLoopActive = true;
+  frameCounter = 0;
+  landmarkBuffer = [];
+  const loop = () => {
+    if (!frameLoopActive) return;
+    const nowMs = performance.now();
+    const task = TASKS[currentTaskIdx];
+
+    try {
+      const result = faceLandmarker.detectForVideo(videoEl, nowMs);
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+      if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+        const landmarks = result.faceLandmarks[0];
+
+        landmarkBuffer.push({
+          t: nowMs,
+          lm: landmarks.map(p => ({ x: p.x, y: p.y, z: p.z })),
+        });
+        if (landmarkBuffer.length > 300) landmarkBuffer.shift();
+
+        drawingUtils.drawConnectors(
+          landmarks,
+          FaceLandmarker.FACE_LANDMARKS_TESSELATION,
+          { color: "rgba(0,255,0,0.15)", lineWidth: 0.5 }
+        );
+        drawingUtils.drawConnectors(
+          landmarks,
+          FaceLandmarker.FACE_LANDMARKS_LIPS,
+          { color: "rgba(0,255,120,0.7)", lineWidth: 1.5 }
+        );
+
+        if (frameCounter % 3 === 0) {
+          lastTongueTip = findTongueTip(landmarks, task.direction);
+        }
+        if (lastTongueTip) {
+          overlayCtx.fillStyle = "rgba(255,40,40,0.95)";
+          overlayCtx.beginPath();
+          overlayCtx.arc(lastTongueTip.x, lastTongueTip.y, 10, 0, Math.PI * 2);
+          overlayCtx.fill();
+        }
+
+        lastAutoScore = task.score(landmarks, lastTongueTip, videoEl.videoWidth, videoEl.videoHeight);
+        const holdResult = holdDetector.update(lastAutoScore, nowMs);
+        updateProgressBar(holdResult);
+        updateGuidance(task, lastAutoScore, holdResult.state);
+
+        if (holdResult.state === 'COMPLETE' && !captureInProgress) {
+          triggerAutoCapture();
+        }
+      } else {
+        updateGuidance(null, 0, 'NO_FACE');
+      }
+    } catch (e) {
+      console.error('frame loop error', e);
+    }
+
+    frameCounter++;
+    if (frameLoopActive) requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+
+function stopFrameLoop() {
+  frameLoopActive = false;
+}
+
+function updateProgressBar({ progress }) {
+  const pct = Math.max(0, Math.min(1, progress)) * 100;
+  document.getElementById('progress-fill').style.width = `${pct}%`;
+  const elapsed = (Math.max(0, Math.min(1, progress)) * 2).toFixed(1);
+  document.getElementById('progress-text').textContent = `${elapsed}s / 2.0s`;
+}
+
+function updateGuidance(task, score, state) {
+  const el = document.getElementById('guidance-text');
+  if (state === 'NO_FACE') {
+    el.textContent = "Position the face in the center of the frame.";
+    return;
+  }
+  if (state === 'HOLDING') {
+    el.textContent = "Great — keep holding!";
+    return;
+  }
+  if (!lastTongueTip) {
+    el.textContent = "Tongue not visible — open the mouth wider, ensure good lighting.";
+    return;
+  }
+  const msgs = {
+    latR: "Move the tongue further to the right",
+    latL: "Move the tongue further to the left",
+    elev: "Lift the tongue tip higher",
+  };
+  if (score < 0.3) el.textContent = msgs[task.id];
+  else if (score < 0.7) el.textContent = "Almost there — push a bit further";
+  else el.textContent = "Excellent — hold that position!";
+}
+
+function startRecording() {
+  mediaRecorderChunks = [];
+  let mimeType = 'video/webm;codecs=vp9';
+  if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
+  if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+  const opts = mimeType
+    ? { mimeType, videoBitsPerSecond: 2_500_000 }
+    : { videoBitsPerSecond: 2_500_000 };
+  mediaRecorder = new MediaRecorder(videoStream, opts);
+  mediaRecorder.ondataavailable = (e) => {
+    if (!e.data || e.data.size === 0) return;
+    mediaRecorderChunks.push(e.data);
+    let total = mediaRecorderChunks.reduce((a, c) => a + c.size, 0);
+    while (total > 12 * 1024 * 1024 && mediaRecorderChunks.length > 1) {
+      const removed = mediaRecorderChunks.shift();
+      total -= removed.size;
+    }
+  };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(
+      mediaRecorderChunks,
+      { type: mediaRecorder.mimeType || 'video/webm' }
+    );
+    capturedClipBlob = blob;
+    capturedFrames = landmarkBuffer.slice(-180);
+    showLabelScreen();
+  };
+  mediaRecorder.start(500);
+}
+
+function triggerAutoCapture() {
+  if (captureInProgress) return;
+  captureInProgress = true;
+  capturedAutoScore = lastAutoScore;
+  setTimeout(() => {
+    stopFrameLoop();
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+  }, 300);
+}
+
+function manualCapture() {
+  if (captureInProgress) return;
+  captureInProgress = true;
+  capturedAutoScore = lastAutoScore;
+  stopFrameLoop();
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+  }
+}
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function setNameAndStart() {
+  const val = document.getElementById('name-input').value.trim();
+  if (!/^[A-Za-z0-9 _.\-]{1,64}$/.test(val)) {
+    showToast("Name must be 1-64 chars: letters, digits, space, dot, _ or -");
+    return;
+  }
+  participantName = val;
+  currentTaskIdx = 0;
+  showInstructionsScreen();
+}
+
+function showInstructionsScreen() {
+  const task = TASKS[currentTaskIdx];
+  document.getElementById('instr-counter').textContent =
+    `Task ${currentTaskIdx + 1} of ${TASKS.length}`;
+  document.getElementById('instr-name').textContent = task.name;
+  document.getElementById('instr-text').textContent = task.instruction;
+  showScreen('screen-instructions');
+}
+
+async function startLiveCapture() {
+  const task = TASKS[currentTaskIdx];
+  document.getElementById('live-counter').textContent =
+    `Task ${currentTaskIdx + 1} of ${TASKS.length}`;
+  document.getElementById('live-name').textContent = task.name;
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('progress-text').textContent = '0.0s / 2.0s';
+  document.getElementById('guidance-text').textContent = 'Starting camera…';
+  showScreen('screen-live');
+  try {
+    if (!faceLandmarker) await initMediaPipe();
+    if (!videoStream) await initCamera();
+    holdDetector = new HoldDetector({
+      threshold: task.holdThreshold,
+      holdMs: 2000,
+      dropThreshold: task.dropThreshold,
+    });
+    captureInProgress = false;
+    lastTongueTip = null;
+    lastAutoScore = 0;
+    startRecording();
+    startFrameLoop();
+  } catch (e) {
+    console.error(e);
+    showError(`Camera/MediaPipe init failed: ${e.message || e}. Make sure to allow camera access.`);
+  }
+}
+
+function showLabelScreen() {
+  const task = TASKS[currentTaskIdx];
+  document.getElementById('label-counter').textContent =
+    `Task ${currentTaskIdx + 1} of ${TASKS.length}`;
+  document.getElementById('label-name').textContent = task.name;
+  document.getElementById('label-auto-score').textContent =
+    capturedAutoScore.toFixed(2);
+
+  const previewVideo = document.getElementById('preview-video');
+  if (previewVideo.src) URL.revokeObjectURL(previewVideo.src);
+  previewVideo.src = URL.createObjectURL(capturedClipBlob);
+  previewVideo.play().catch(() => {});
+
+  const row = document.getElementById('label-buttons-row');
+  row.innerHTML = '';
+  for (const score of LABEL_SCALES[task.id]) {
+    const btn = document.createElement('button');
+    btn.textContent = String(score);
+    btn.title = RUBRIC_TOOLTIPS[task.id][score] || '';
+    btn.addEventListener('click', () => onLabelClick(score));
+    row.appendChild(btn);
+  }
+  showScreen('screen-label');
+}
+
+async function onLabelClick(clinicalScore) {
+  const buttons = document.querySelectorAll('#label-buttons-row button');
+  buttons.forEach(b => b.disabled = true);
+  try {
+    await uploadCapture(clinicalScore);
+    showSavedScreen();
+  } catch (e) {
+    console.error(e);
+    showError(`Upload failed: ${e.message || e}. Click the score again to retry.`);
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+
+async function uploadCapture(clinicalScore) {
+  const task = TASKS[currentTaskIdx];
+  const fd = new FormData();
+  fd.append('name', participantName);
+  fd.append('task', task.id);
+  fd.append('clinical_score', String(clinicalScore));
+  fd.append('peak_auto_score', String(capturedAutoScore));
+  fd.append('captured_at', new Date().toISOString());
+  fd.append('video', capturedClipBlob, 'clip.webm');
+  const landmarksDoc = {
+    name: participantName,
+    task: task.id,
+    mirrored: false,
+    cameraFlipped: true,
+    sampleRateHz: 60,
+    frameCount: capturedFrames ? capturedFrames.length : 0,
+    landmarks: capturedFrames || [],
+  };
+  fd.append(
+    'landmarks',
+    new Blob([JSON.stringify(landmarksDoc)], { type: 'application/json' }),
+    'landmarks.json'
+  );
+
+  const r = await fetch('/api/upload', { method: 'POST', body: fd });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status}: ${text}`);
+  }
+}
+
+function showSavedScreen() {
+  document.getElementById('saved-text').textContent =
+    `Task ${currentTaskIdx + 1} of ${TASKS.length} saved for ${participantName}.`;
+  showScreen('screen-saved');
+}
+
+function nextTask() {
+  currentTaskIdx++;
+  if (currentTaskIdx >= TASKS.length) {
+    showDoneScreen();
+  } else {
+    showInstructionsScreen();
+  }
+}
+
+function showDoneScreen() {
+  document.getElementById('done-text').textContent =
+    `All ${TASKS.length} tasks recorded for ${participantName}.`;
+  showScreen('screen-done');
+}
+
+function recapture() {
+  const pv = document.getElementById('preview-video');
+  if (pv.src) URL.revokeObjectURL(pv.src);
+  pv.src = '';
+  capturedClipBlob = null;
+  capturedFrames = null;
+  startLiveCapture();
+}
+
+function cancelLive() {
+  stopFrameLoop();
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    try { mediaRecorder.stop(); } catch (e) {}
+  }
+  showInstructionsScreen();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 4500);
+}
+
+function showError(msg) {
+  showToast(msg);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  videoEl = document.getElementById('cam-video');
+  canvasStackEl = document.getElementById('canvas-stack');
+  overlayCanvas = document.getElementById('overlay-canvas');
+  overlayCtx = overlayCanvas.getContext('2d');
+  tongueCanvas = document.createElement('canvas');
+  tongueCtx = tongueCanvas.getContext('2d', { willReadFrequently: true });
+
+  document.getElementById('start-btn').addEventListener('click', setNameAndStart);
+  document.getElementById('name-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') setNameAndStart();
+  });
+  document.getElementById('ready-btn').addEventListener('click', startLiveCapture);
+  document.getElementById('cancel-instr-btn').addEventListener('click', () => showScreen('screen-welcome'));
+  document.getElementById('manual-capture-btn').addEventListener('click', manualCapture);
+  document.getElementById('cancel-live-btn').addEventListener('click', cancelLive);
+  document.getElementById('recapture-btn').addEventListener('click', recapture);
+  document.getElementById('next-task-btn').addEventListener('click', nextTask);
+  document.getElementById('restart-btn').addEventListener('click', () => location.reload());
+  document.getElementById('error-back-btn').addEventListener('click', () => showScreen('screen-welcome'));
+});
+</script>
+</body>
+</html>
