@@ -1,13 +1,13 @@
 """POC dataset builder.
 
-Parses data/<subject>/*_meta.json, decodes the last frame of the matching
-.webm (hold-complete peak pose), crops the mouth ROI with MediaPipe face
-landmarks, and writes:
+Parses data/<subject>/*_meta.json, synchronizes the video frames with the
+MediaPipe face landmarks to find the 'Last Valid Frame' (highest quality hold),
+crops the mouth ROI, and writes:
 
   poc/out/dataset.csv    one row per clip: landmark + crop features + label
   poc/out/crops/*.png    buccal-ROI crops (anonymized mouth region only)
 
-Run:  .venv/bin/python -m poc.build_dataset
+Run:  python -m poc.build_dataset
 """
 from __future__ import annotations
 
@@ -40,29 +40,34 @@ LM = {
 
 META_RE = re.compile(r"^(latR|latL|elev)_(.+)_s(\d+)_meta\.json$")
 ALLOWED_SCORES = {
-    "latR": {0, 25, 50, 100},
-    "latL": {0, 25, 50, 100},
+    "latR": {0, 25, 50, 75, 100},
+    "latL": {0, 25, 50, 75, 100},
     "elev": {0, 50, 100},
 }
 
 
-def extract_last_frame(video_path: Path):
+def extract_sync_data(video_path: Path, landmark_frames: list):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return None
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    last = None
-    count = 0
+        return None, None
+    
+    video_frames = []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        last = frame
-        count += 1
-        if n_frames and count >= n_frames:
-            break
+        video_frames.append(frame)
     cap.release()
-    return last
+    
+    if not video_frames or not landmark_frames:
+        return None, None
+        
+    # Synchronize: Use the last frame where we have both video and landmarks
+    idx = min(len(video_frames), len(landmark_frames)) - 1
+    if idx < 0:
+        return None, None
+        
+    return video_frames[idx], landmark_frames[idx]["lm"]
 
 
 def crop_mouth(frame_bgr, lm, pad_frac: float = 0.6):
@@ -143,18 +148,20 @@ def parse_clip(meta_path: Path, subject_dir: Path):
         return None
     try:
         lm_doc = json.loads(landmarks_path.read_text())
-        frames = lm_doc.get("landmarks") or []
-        if not frames:
+        lm_frames = lm_doc.get("landmarks") or []
+        if not lm_frames:
             return None
-        peak_lm = frames[-1]["lm"]
     except Exception:
         return None
-    frame = extract_last_frame(video_path)
-    if frame is None:
+        
+    frame, sync_lm = extract_sync_data(video_path, lm_frames)
+    if frame is None or sync_lm is None:
         return None
-    crop = crop_mouth(frame, peak_lm)
+        
+    crop = crop_mouth(frame, sync_lm)
     if crop is None:
         return None
+        
     crop_name = f"{subject_dir.name}_{task}_{ts}_s{score}.png"
     cv2.imwrite(str(CROPS_DIR / crop_name), crop)
 
@@ -164,9 +171,9 @@ def parse_clip(meta_path: Path, subject_dir: Path):
         "score": score,
         "crop_path": str((CROPS_DIR / crop_name).relative_to(ROOT)),
         "video_path": str(video_path.relative_to(ROOT)),
-        "n_frames": len(frames),
+        "n_frames": len(lm_frames),
     }
-    row.update(landmark_features(peak_lm))
+    row.update(landmark_features(sync_lm))
     row.update(image_features(crop))
     return row
 
