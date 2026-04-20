@@ -108,6 +108,19 @@ input[type="text"]:focus { outline: 2px solid var(--accent); border-color: var(-
 }
 .canvas-stack video { object-fit: cover; background: #000; }
 #overlay-canvas { pointer-events: none; }
+.canvas-stack.bad-tracking::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 4px solid var(--err);
+  border-radius: 8px;
+  pointer-events: none;
+  animation: pulse-border 0.8s ease-in-out infinite alternate;
+}
+@keyframes pulse-border {
+  from { opacity: 1; }
+  to   { opacity: 0.4; }
+}
 .guidance {
   text-align: center;
   font-size: 14px;
@@ -505,6 +518,41 @@ function findTongueTip(landmarks, taskDirection) {
   };
 }
 
+/**
+ * Checks two independent quality gates:
+ *   1. CENTER — commissure midpoint must be in the middle of the frame
+ *      (catches face too far to one side or partially off-screen)
+ *   2. TILT — nose landmark must be clearly above upper lip
+ *      (catches severe downward tilt, i.e. camera below chin)
+ * Returns { ok, reason } where reason is a short key for updateGuidance.
+ */
+function checkFaceQuality(landmarks) {
+  const rC      = landmarks[LM.R_COMMISSURE];
+  const lC      = landmarks[LM.L_COMMISSURE];
+  const nose    = landmarks[LM.NOSE_TIP];
+  const upperLip = landmarks[LM.UPPER_LIP_CENTER];
+
+  const cx = (rC.x + lC.x) / 2;   // normalized 0–1
+  const cy = (rC.y + lC.y) / 2;
+
+  // Gate 1: face center must land in the inner 60% of frame width
+  // and above the bottom 20% of frame height
+  if (cx < 0.20 || cx > 0.80) return { ok: false, reason: 'center_h' };
+  if (cy < 0.08 || cy > 0.82) return { ok: false, reason: 'center_v' };
+
+  // Gate 2: inter-commissure must be at least 8% of frame width
+  // (prevents false-positive from a tiny/distant detected face)
+  const icFrac = Math.abs(rC.x - lC.x);
+  if (icFrac < 0.08) return { ok: false, reason: 'too_far' };
+
+  // Gate 3: nose must be clearly above upper lip in image coordinates
+  // (y increases downward; nose.y < upperLip.y in a frontal face)
+  // A margin of 0.02 gives tolerance for slight upward tilt.
+  if (nose.y >= upperLip.y - 0.02) return { ok: false, reason: 'tilt' };
+
+  return { ok: true, reason: null };
+}
+
 function scoreLateralization(landmarks, tongueTip, side, w) {
   if (!tongueTip) return 0;
   const x61 = landmarks[LM.R_COMMISSURE].x * w;
@@ -578,13 +626,9 @@ function startFrameLoop() {
 
       if (result.faceLandmarks && result.faceLandmarks.length > 0) {
         const landmarks = result.faceLandmarks[0];
+        const quality = checkFaceQuality(landmarks);
 
-        landmarkBuffer.push({
-          t: nowMs,
-          lm: landmarks.map(p => ({ x: p.x, y: p.y, z: p.z })),
-        });
-        if (landmarkBuffer.length > 300) landmarkBuffer.shift();
-
+        // Always draw connectors so the user sees where landmarks landed
         drawingUtils.drawConnectors(
           landmarks,
           FaceLandmarker.FACE_LANDMARKS_TESSELATION,
@@ -593,28 +637,45 @@ function startFrameLoop() {
         drawingUtils.drawConnectors(
           landmarks,
           FaceLandmarker.FACE_LANDMARKS_LIPS,
-          { color: "rgba(0,255,120,0.7)", lineWidth: 1.5 }
+          { color: quality.ok ? "rgba(0,255,120,0.7)" : "rgba(239,68,68,0.85)", lineWidth: 2 }
         );
 
-        if (frameCounter % 3 === 0) {
-          lastTongueTip = findTongueTip(landmarks, task.direction);
-        }
-        if (lastTongueTip) {
-          overlayCtx.fillStyle = "rgba(255,40,40,0.95)";
-          overlayCtx.beginPath();
-          overlayCtx.arc(lastTongueTip.x, lastTongueTip.y, 10, 0, Math.PI * 2);
-          overlayCtx.fill();
-        }
+        if (!quality.ok) {
+          // Bad position — reset hold progress, block capture, show warning
+          canvasStackEl.classList.add('bad-tracking');
+          holdDetector.update(0, nowMs);               // forces reset of hold timer
+          updateProgressBar({ progress: 0 });
+          updateGuidance(task, 0, 'BAD_POSITION', quality.reason);
+        } else {
+          canvasStackEl.classList.remove('bad-tracking');
 
-        lastAutoScore = task.score(landmarks, lastTongueTip, videoEl.videoWidth, videoEl.videoHeight);
-        const holdResult = holdDetector.update(lastAutoScore, nowMs);
-        updateProgressBar(holdResult);
-        updateGuidance(task, lastAutoScore, holdResult.state);
+          landmarkBuffer.push({
+            t: nowMs,
+            lm: landmarks.map(p => ({ x: p.x, y: p.y, z: p.z })),
+          });
+          if (landmarkBuffer.length > 300) landmarkBuffer.shift();
 
-        if (holdResult.state === 'COMPLETE' && !captureInProgress) {
-          triggerAutoCapture();
+          if (frameCounter % 3 === 0) {
+            lastTongueTip = findTongueTip(landmarks, task.direction);
+          }
+          if (lastTongueTip) {
+            overlayCtx.fillStyle = "rgba(255,40,40,0.95)";
+            overlayCtx.beginPath();
+            overlayCtx.arc(lastTongueTip.x, lastTongueTip.y, 10, 0, Math.PI * 2);
+            overlayCtx.fill();
+          }
+
+          lastAutoScore = task.score(landmarks, lastTongueTip, videoEl.videoWidth, videoEl.videoHeight);
+          const holdResult = holdDetector.update(lastAutoScore, nowMs);
+          updateProgressBar(holdResult);
+          updateGuidance(task, lastAutoScore, holdResult.state);
+
+          if (holdResult.state === 'COMPLETE' && !captureInProgress) {
+            triggerAutoCapture();
+          }
         }
       } else {
+        canvasStackEl.classList.remove('bad-tracking');
         updateGuidance(null, 0, 'NO_FACE');
       }
     } catch (e) {
@@ -638,12 +699,25 @@ function updateProgressBar({ progress }) {
   document.getElementById('progress-text').textContent = `${elapsed}s / 2.0s`;
 }
 
-function updateGuidance(task, score, state) {
+function updateGuidance(task, score, state, reason) {
   const el = document.getElementById('guidance-text');
   if (state === 'NO_FACE') {
-    el.textContent = "Position the face in the center of the frame.";
+    el.textContent = "No face detected — center your face in the frame.";
+    el.style.color = 'var(--err)';
     return;
   }
+  if (state === 'BAD_POSITION') {
+    const msgs = {
+      tilt:     "⚠️ Tilt your phone down — the camera is too far below your chin.",
+      center_h: "⚠️ Center your face horizontally in the frame.",
+      center_v: "⚠️ Move your face to the center of the frame vertically.",
+      too_far:  "⚠️ Move closer to the camera.",
+    };
+    el.textContent = msgs[reason] || "⚠️ Adjust your position — tracking lost.";
+    el.style.color = 'var(--err)';
+    return;
+  }
+  el.style.color = '';
   if (state === 'HOLDING') {
     el.textContent = "Great — keep holding!";
     return;

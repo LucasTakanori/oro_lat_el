@@ -1,8 +1,8 @@
 """POC dataset builder.
 
-Parses data/<subject>/*_meta.json, synchronizes the video frames with the
-MediaPipe face landmarks to find the 'Last Valid Frame' (highest quality hold),
-crops the mouth ROI, and writes:
+Parses data/<subject>/*_meta.json, picks the peak tongue-extension frame via
+asymmetric-redness × sharpness scoring (Option C), crops a task-adaptive ROI
+(Option A), and writes:
 
   poc/out/dataset.csv    one row per clip: landmark + crop features + label
   poc/out/crops/*.png    buccal-ROI crops (anonymized mouth region only)
@@ -46,48 +46,110 @@ ALLOWED_SCORES = {
 }
 
 
-def extract_sync_data(video_path: Path, landmark_frames: list):
+def _load_video_frames(video_path: Path) -> list:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return None, None
-    
-    video_frames = []
+        return []
+    frames = []
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        video_frames.append(frame)
+        frames.append(frame)
     cap.release()
-    
-    if not video_frames or not landmark_frames:
-        return None, None
-        
-    # Synchronize: Use the last frame where we have both video and landmarks
-    idx = min(len(video_frames), len(landmark_frames)) - 1
-    if idx < 0:
-        return None, None
-        
-    return video_frames[idx], landmark_frames[idx]["lm"]
+    return frames
 
 
-def crop_mouth(frame_bgr, lm, pad_frac: float = 0.6):
+def _mouth_roi_wide(lm, H: int, W: int):
+    """Wide symmetric ROI used for frame-scoring redness signal."""
+    xs = [lm[j]["x"] * W for j in [LM["R_COMMISSURE"], LM["L_COMMISSURE"],
+                                     LM["UPPER_LIP_CENTER"], LM["LOWER_LIP_CENTER"]]]
+    ys = [lm[j]["y"] * H for j in [LM["R_COMMISSURE"], LM["L_COMMISSURE"],
+                                     LM["UPPER_LIP_CENTER"], LM["LOWER_LIP_CENTER"]]]
+    x0, x1 = int(min(xs)), int(max(xs))
+    y0, y1 = int(min(ys)), int(max(ys))
+    pad = int((x1 - x0) * 0.35)
+    return max(0, x0 - pad), y0, min(W, x1 + pad), y1
+
+
+def pick_best_frame(video_frames: list, landmark_frames: list, task: str,
+                    skip_first: int = 20) -> int:
+    """Option C — asymmetric redness × sharpness scorer.
+
+    Returns the index of the frame with highest tongue-extension score.
+    Falls back to the last valid frame if all scores are zero.
+    """
+    n = min(len(video_frames), len(landmark_frames))
+    if n == 0:
+        return -1
+    best_score, best_idx = -1.0, n - 1
+
+    for i in range(skip_first, n):
+        frame = video_frames[i]
+        lm = landmark_frames[i]["lm"]
+        H, W = frame.shape[:2]
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        sharp = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+        x0, y0, x1, y1 = _mouth_roi_wide(lm, H, W)
+        roi = frame[y0:y1, x0:x1]
+        if roi.size == 0:
+            continue
+
+        # BGR → redness = 2R − G − B
+        r = roi[:, :, 2].astype(float)
+        g = roi[:, :, 1].astype(float)
+        b = roi[:, :, 0].astype(float)
+        redness = 2 * r - g - b
+        mid_x = redness.shape[1] // 2
+        mid_y = redness.shape[0] // 2
+
+        if task == "latR":
+            asym = redness[:, :mid_x].mean() - redness[:, mid_x:].mean()
+        elif task == "latL":
+            asym = redness[:, mid_x:].mean() - redness[:, :mid_x].mean()
+        else:  # elev
+            asym = redness[:mid_y, :].mean() - redness[mid_y:, :].mean()
+
+        score = max(0.0, asym) * sharp
+        if score > best_score:
+            best_score, best_idx = score, i
+
+    return best_idx
+
+
+def crop_mouth(frame_bgr, lm, task: str):
+    """Option A — task-adaptive asymmetric ROI.
+
+    lat*  → wide landscape rectangle, center biased toward tongue side.
+    elev  → taller portrait focused on oral cavity opening.
+    """
     H, W = frame_bgr.shape[:2]
-    idxs = [LM[k] for k in (
-        "R_COMMISSURE", "L_COMMISSURE",
-        "LIP_LEFT_OUTER", "LIP_RIGHT_OUTER",
-        "UPPER_LIP_CENTER", "LOWER_LIP_CENTER", "UPPER_LIP_TOP",
-    )]
-    xs = [lm[i]["x"] * W for i in idxs]
-    ys = [lm[i]["y"] * H for i in idxs]
-    cx = (min(xs) + max(xs)) / 2
-    cy = (min(ys) + max(ys)) / 2
-    w = max(xs) - min(xs)
-    h = max(ys) - min(ys)
-    side = max(w, h) * (1 + 2 * pad_frac)
-    x0 = int(max(0, cx - side / 2))
-    y0 = int(max(0, cy - side / 2))
-    x1 = int(min(W, cx + side / 2))
-    y1 = int(min(H, cy + side / 2))
+    rC = np.array([lm[LM["R_COMMISSURE"]]["x"] * W, lm[LM["R_COMMISSURE"]]["y"] * H])
+    lC = np.array([lm[LM["L_COMMISSURE"]]["x"] * W, lm[LM["L_COMMISSURE"]]["y"] * H])
+    uL = np.array([lm[LM["UPPER_LIP_CENTER"]]["x"] * W, lm[LM["UPPER_LIP_CENTER"]]["y"] * H])
+    chin = np.array([lm[LM["CHIN"]]["x"] * W, lm[LM["CHIN"]]["y"] * H])
+
+    ic = np.linalg.norm(rC - lC)  # inter-commissure = face-scale reference
+    cx = (rC[0] + lC[0]) / 2
+    cy = (rC[1] + lC[1]) / 2
+
+    if task.startswith("lat"):
+        half_w = ic * 1.4   # 2.8× ic total — catches extended tongue tip
+        half_h = ic * 0.55
+        if task == "latR":
+            cx += ic * 0.25
+        elif task == "latL":
+            cx -= ic * 0.25
+    else:  # elev
+        half_w = ic * 0.65
+        half_h = (chin[1] - uL[1]) * 0.65
+
+    x0 = int(max(0, cx - half_w))
+    x1 = int(min(W, cx + half_w))
+    y0 = int(max(0, cy - half_h))
+    y1 = int(min(H, cy + half_h))
     if x1 - x0 < 10 or y1 - y0 < 10:
         return None
     return frame_bgr[y0:y1, x0:x1]
@@ -154,11 +216,17 @@ def parse_clip(meta_path: Path, subject_dir: Path):
     except Exception:
         return None
         
-    frame, sync_lm = extract_sync_data(video_path, lm_frames)
-    if frame is None or sync_lm is None:
+    video_frames = _load_video_frames(video_path)
+    if not video_frames:
         return None
-        
-    crop = crop_mouth(frame, sync_lm)
+
+    best_idx = pick_best_frame(video_frames, lm_frames, task)
+    if best_idx < 0:
+        return None
+    frame = video_frames[best_idx]
+    sync_lm = lm_frames[best_idx]["lm"]
+
+    crop = crop_mouth(frame, sync_lm, task)
     if crop is None:
         return None
         
@@ -172,6 +240,7 @@ def parse_clip(meta_path: Path, subject_dir: Path):
         "crop_path": str((CROPS_DIR / crop_name).relative_to(ROOT)),
         "video_path": str(video_path.relative_to(ROOT)),
         "n_frames": len(lm_frames),
+        "best_frame_idx": best_idx,
     }
     row.update(landmark_features(sync_lm))
     row.update(image_features(crop))
