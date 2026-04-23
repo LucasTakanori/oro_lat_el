@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LROM annotator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: #1a1a1a; border-bottom: 1px solid #333; }
+  header select, header button, header input { background: #222; color: #eee; border: 1px solid #444; padding: 6px 10px; border-radius: 4px; font: inherit; }
+  header button { cursor: pointer; }
+  header button:hover { background: #333; }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px; }
+  .viewer { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .frame-scroll { background: #000; border: 1px solid #333; border-radius: 4px; overflow: auto; max-height: calc(100vh - 240px); user-select: none; position: relative; }
+  .frame-stage { position: relative; display: inline-block; transform-origin: 0 0; }
+  .frame-stage img { display: block; cursor: crosshair; -webkit-user-drag: none; user-select: none; }
+  .frame-stage canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+  .zoom-bar { display: flex; gap: 6px; align-items: center; font-size: 12px; color: #aaa; }
+  .zoom-bar .btn { background: #222; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; cursor: pointer; font: inherit; }
+  .scrubber { display: flex; align-items: center; gap: 8px; }
+  .scrubber input[type=range] { flex: 1; }
+  .scrubber .btn { background: #222; color: #eee; border: 1px solid #444; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  .scrubber .btn:hover { background: #333; }
+  .panel { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .panel h3 { margin: 0 0 4px 0; font-size: 14px; text-transform: uppercase; color: #8af; letter-spacing: 0.05em; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .field label { color: #aaa; }
+  .field input[type=range] { width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row .btn { flex: 1; padding: 8px; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; cursor: pointer; font: inherit; }
+  .row .btn:hover { background: #3a3a3a; }
+  .row .btn.primary { background: #1e4d8b; border-color: #3072c4; }
+  .row .btn.primary:hover { background: #2a5ea0; }
+  .row .btn.danger { background: #7a1d1d; border-color: #c43030; }
+  .row .btn.danger:hover { background: #922; }
+  .row .btn.active { background: #1e4d8b; border-color: #5a9aff; box-shadow: 0 0 0 1px #5a9aff inset; }
+  .row .btn.active:hover { background: #2a5ea0; }
+  .range-hint { font-size: 12px; color: #999; }
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ccc; cursor: pointer; }
+  .toggle input { accent-color: #5a9aff; }
+  .tips-list { max-height: 220px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #0d0d0d; border: 1px solid #222; border-radius: 4px; padding: 6px; }
+  .tips-list .row-item { display: flex; justify-content: space-between; padding: 2px 4px; border-bottom: 1px solid #1a1a1a; cursor: pointer; }
+  .tips-list .row-item:hover { background: #222; }
+  .tips-list .row-item.current { background: #1e4d8b55; }
+  .status { font-size: 12px; color: #6c6; min-height: 16px; }
+  .status.err { color: #f66; }
+  kbd { background: #333; color: #ddd; padding: 1px 4px; border-radius: 3px; font-family: monospace; font-size: 11px; border: 1px solid #555; }
+  .shortcuts { font-size: 11px; color: #888; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<header>
+  <strong>LROM annotator</strong>
+  <button id="prevClipBtn" title="previous clip (Ctrl+,)">◀ clip</button>
+  <select id="clipSelect"></select>
+  <button id="nextClipBtn" title="next clip (Ctrl+.)">clip ▶</button>
+  <span id="clipInfo" style="color:#aaa; font-size: 13px;"></span>
+  <span style="flex:1"></span>
+  <span id="saveStatus" class="status"></span>
+  <button id="saveBtn">Save</button>
+</header>
+
+<main>
+  <section class="viewer">
+    <div class="frame-scroll" id="frameScroll">
+      <div class="frame-stage" id="frameStage">
+        <img id="frameImg" alt="frame" />
+        <canvas id="overlay"></canvas>
+      </div>
+    </div>
+    <div class="scrubber">
+      <button class="btn" id="prevBtn">◀</button>
+      <button class="btn" id="playBtn">▶</button>
+      <button class="btn" id="nextBtn">▶|</button>
+      <input type="range" id="frameSlider" min="0" max="0" value="0" />
+      <span id="frameLabel" style="min-width:90px; text-align:right; font-family:monospace;">0 / 0</span>
+    </div>
+    <div class="zoom-bar">
+      <button class="btn" id="zoomOut">−</button>
+      <button class="btn" id="zoomFit">fit</button>
+      <button class="btn" id="zoom1">100%</button>
+      <button class="btn" id="zoomIn">+</button>
+      <span id="zoomLabel">zoom: 100%</span>
+      <span style="color:#666">· Ctrl+wheel to zoom · scroll to pan</span>
+    </div>
+    <div class="shortcuts">
+      <kbd>←</kbd>/<kbd>→</kbd> prev/next frame &nbsp;
+      <kbd>Space</kbd> play/pause &nbsp;
+      <kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> ±10 frames &nbsp;
+      <kbd>[</kbd>/<kbd>]</kbd> range start/end &nbsp;
+      <kbd>X</kbd> delete &nbsp;
+      <kbd>N</kbd> toggle no-tongue &nbsp;
+      <kbd>M</kbd> toggle mode &nbsp;
+      <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> zoom &nbsp;
+      <strong>Left-click</strong> = place tip · <strong>Right-click</strong> = mark NO TONGUE. Hold to drag-paint across frames.
+    </div>
+  </section>
+
+  <aside class="panel">
+    <h3>Clip grade</h3>
+    <div class="field">
+      <label><span id="gradeLabel">grade: 0</span> &middot; Lazarus reference: <span id="lazarusRef">—</span></label>
+      <input type="range" id="gradeSlider" min="0" max="100" value="0" />
+    </div>
+
+    <h3>Tip placement</h3>
+    <div class="row">
+      <button class="btn active" id="modeSingle" data-mode="single">single frame</button>
+      <button class="btn" id="modeRange" data-mode="range">range</button>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="autoAdvance" checked />
+      auto-advance to next frame after click (single mode)
+    </label>
+    <div class="field" id="rangeRow">
+      <div class="range-hint">
+        Range: <span id="rangeStart">—</span> → <span id="rangeEnd">—</span>.
+        Press <kbd>[</kbd> / <kbd>]</kbd> on the current frame, then click on the video.
+      </div>
+      <div class="row">
+        <button class="btn" id="markStart">mark start</button>
+        <button class="btn" id="markEnd">mark end</button>
+        <button class="btn" id="clearRange">clear</button>
+      </div>
+    </div>
+    <div class="row">
+      <button class="btn danger" id="deleteCurrent">delete tip on current frame</button>
+    </div>
+    <div class="row">
+      <button class="btn danger" id="clearAllTips">clear all tips</button>
+    </div>
+
+    <h3>Annotated frames (<span id="tipCount">0</span>)</h3>
+    <div class="tips-list" id="tipsList"></div>
+
+    <h3>File</h3>
+    <div class="row">
+      <button class="btn primary" id="saveBtn2">Save annotation</button>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  clips: [],
+  current: null,           // {subject, stem, task, lazarus_score}
+  meta: null,              // {n_frames, H, W}
+  idx: 0,
+  tips: {},                // {frame_idx_str: [x, y]}
+  noTongue: {},            // {frame_idx_str: true}
+  grade: 0,
+  rangeStart: null,
+  rangeEnd: null,
+  mode: "single",
+  playing: false,
+  playTimer: null,
+  baseFit: 1,              // fit-to-container scale
+  zoom: 1,                 // user zoom multiplier
+};
+
+// hold-drag annotation
+let dragKind = null;       // "tip" | "none" | null
+let cursorXY = null;       // [videoX, videoY]
+let dragInterval = null;
+const DRAG_TICK_MS = 100;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(res.statusText);
+  return res.json();
+}
+
+function renderClipOptions() {
+  const sel = $("clipSelect");
+  const prevVal = sel.value;
+  sel.innerHTML = "";
+  for (const c of state.clips) {
+    const o = document.createElement("option");
+    o.value = `${c.subject}/${c.stem}`;
+    const total = (c.n_tips || 0) + (c.n_none || 0);
+    const mark = total > 0 ? "✓" : "·";
+    o.textContent = `${mark} ${c.subject} · ${c.task} s${c.lazarus_score} · ${c.stem.slice(c.task.length+1, 30)}… (tip ${c.n_tips||0} / none ${c.n_none||0})`;
+    o.style.color = total > 0 ? "#6f6" : "#f88";
+    sel.appendChild(o);
+  }
+  if (prevVal) sel.value = prevVal;
+}
+
+async function refreshClips() {
+  state.clips = await fetchJSON("/api/clips");
+  renderClipOptions();
+}
+
+async function loadClips() {
+  await refreshClips();
+  if (state.clips.length) {
+    await loadClip(state.clips[0]);
+    $("clipSelect").value = `${state.clips[0].subject}/${state.clips[0].stem}`;
+  }
+}
+
+function currentClipIndex() {
+  if (!state.current) return -1;
+  return state.clips.findIndex(c => c.subject === state.current.subject && c.stem === state.current.stem);
+}
+
+async function jumpClip(delta) {
+  const i = currentClipIndex();
+  if (i < 0) return;
+  const j = Math.max(0, Math.min(state.clips.length - 1, i + delta));
+  if (j === i) return;
+  const c = state.clips[j];
+  $("clipSelect").value = `${c.subject}/${c.stem}`;
+  await loadClip(c);
+}
+
+async function loadClip(c) {
+  state.current = c;
+  $("clipInfo").textContent = `${c.subject} / ${c.task} / lazarus=${c.lazarus_score}`;
+  $("lazarusRef").textContent = c.lazarus_score;
+  state.meta = await fetchJSON(`/api/meta?subject=${encodeURIComponent(c.subject)}&stem=${encodeURIComponent(c.stem)}`);
+  $("frameSlider").max = state.meta.n_frames - 1;
+  const ann = await fetchJSON(`/api/annotation?subject=${encodeURIComponent(c.subject)}&stem=${encodeURIComponent(c.stem)}`);
+  state.tips = ann.tips || {};
+  state.noTongue = ann.no_tongue || {};
+  state.grade = ann.grade ?? c.lazarus_score;
+  $("gradeSlider").value = state.grade;
+  $("gradeLabel").textContent = `grade: ${state.grade}`;
+  state.idx = 0;
+  state.rangeStart = null;
+  state.rangeEnd = null;
+  updateRangeLabel();
+  await showFrame(0);
+  renderTipsList();
+}
+
+async function showFrame(i) {
+  if (!state.meta) return;
+  i = Math.max(0, Math.min(state.meta.n_frames - 1, i));
+  state.idx = i;
+  $("frameSlider").value = i;
+  $("frameLabel").textContent = `${i} / ${state.meta.n_frames - 1}`;
+  const url = `/api/frame?subject=${encodeURIComponent(state.current.subject)}&stem=${encodeURIComponent(state.current.stem)}&idx=${i}`;
+  const img = $("frameImg");
+  await new Promise((resolve) => {
+    img.onload = resolve;
+    img.src = url;
+  });
+  // pin img + canvas to natural video pixel size, then transform-scale the stage
+  img.style.width = state.meta.W + "px";
+  img.style.height = state.meta.H + "px";
+  const canvas = $("overlay");
+  canvas.width = state.meta.W;
+  canvas.height = state.meta.H;
+  computeBaseFit();
+  drawOverlay();
+  renderTipsList();
+}
+
+function computeBaseFit() {
+  if (!state.meta) return;
+  const scroll = $("frameScroll");
+  const cw = scroll.clientWidth - 2;
+  const ch = scroll.clientHeight - 2;
+  state.baseFit = Math.min(cw / state.meta.W, ch / state.meta.H);
+  if (!isFinite(state.baseFit) || state.baseFit <= 0) state.baseFit = 1;
+  applyTransform();
+}
+
+function applyTransform() {
+  const total = state.baseFit * state.zoom;
+  $("frameStage").style.transform = `scale(${total})`;
+  $("zoomLabel").textContent = `zoom: ${(total * 100).toFixed(0)}% (user ${(state.zoom * 100).toFixed(0)}%)`;
+}
+
+function setZoom(z) {
+  state.zoom = Math.max(0.25, Math.min(8, z));
+  applyTransform();
+}
+
+function drawOverlay() {
+  const c = $("overlay");
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+  const total = state.baseFit * state.zoom;
+  const r = total > 0 ? 10 / total : 10;
+  const lw = total > 0 ? 2 / total : 2;
+  const t = state.tips[String(state.idx)];
+  if (t) {
+    const [x, y] = t;
+    ctx.strokeStyle = "#0f0";
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(0,255,0,0.6)";
+    ctx.fill();
+  }
+  if (state.noTongue[String(state.idx)]) {
+    ctx.strokeStyle = "#f44";
+    ctx.lineWidth = lw * 3;
+    ctx.strokeRect(lw, lw, c.width - 2 * lw, c.height - 2 * lw);
+    ctx.fillStyle = "#f44";
+    const fs = total > 0 ? 28 / total : 28;
+    ctx.font = `bold ${fs}px sans-serif`;
+    ctx.fillText("NO TONGUE", 12 / total, 36 / total);
+  }
+  if (state.rangeStart !== null || state.rangeEnd !== null) {
+    ctx.fillStyle = "#ff9";
+    const fs = total > 0 ? 14 / total : 14;
+    ctx.font = `${fs}px sans-serif`;
+    if (state.rangeStart !== null) ctx.fillText(`range start: ${state.rangeStart}`, 8 / total, 20 / total);
+    if (state.rangeEnd !== null) ctx.fillText(`range end: ${state.rangeEnd}`, 8 / total, 40 / total);
+  }
+}
+
+function renderTipsList() {
+  const list = $("tipsList");
+  list.innerHTML = "";
+  const all = new Set([...Object.keys(state.tips), ...Object.keys(state.noTongue)]);
+  const keys = [...all].map(Number).sort((a, b) => a - b);
+  $("tipCount").textContent = keys.length;
+  for (const k of keys) {
+    const d = document.createElement("div");
+    d.className = "row-item" + (k === state.idx ? " current" : "");
+    if (state.noTongue[String(k)]) {
+      d.textContent = `frame ${k}: NO TONGUE`;
+      d.style.color = "#f88";
+    } else {
+      const [x, y] = state.tips[String(k)];
+      d.textContent = `frame ${k}: (${x.toFixed(0)}, ${y.toFixed(0)})`;
+    }
+    d.onclick = () => showFrame(k);
+    list.appendChild(d);
+  }
+}
+
+function updateRangeLabel() {
+  $("rangeStart").textContent = state.rangeStart ?? "—";
+  $("rangeEnd").textContent = state.rangeEnd ?? "—";
+}
+
+function setMode(m) {
+  state.mode = m;
+  $("modeSingle").classList.toggle("active", m === "single");
+  $("modeRange").classList.toggle("active", m === "range");
+}
+$("modeSingle").addEventListener("click", () => setMode("single"));
+$("modeRange").addEventListener("click", () => setMode("range"));
+
+function getVideoXY(e) {
+  const img = $("frameImg");
+  const rect = img.getBoundingClientRect();
+  return [
+    (e.clientX - rect.left) * state.meta.W / rect.width,
+    (e.clientY - rect.top) * state.meta.H / rect.height,
+  ];
+}
+
+function stopDrag() {
+  dragKind = null;
+  if (dragInterval) { clearInterval(dragInterval); dragInterval = null; }
+}
+
+function applyAt(kind, idx, xy) {
+  const k = String(idx);
+  if (kind === "tip") {
+    state.tips[k] = xy.slice();
+    delete state.noTongue[k];
+  } else if (kind === "none") {
+    state.noTongue[k] = true;
+    delete state.tips[k];
+  }
+}
+
+function applyRange(kind, xy) {
+  if (state.rangeStart === null || state.rangeEnd === null) {
+    alert("Set both range start and end first (press [ and ] on frames)");
+    return;
+  }
+  const a = Math.min(state.rangeStart, state.rangeEnd);
+  const b = Math.max(state.rangeStart, state.rangeEnd);
+  for (let k = a; k <= b; k++) applyAt(kind, k, xy);
+  drawOverlay(); renderTipsList();
+}
+
+function startDrag(kind) {
+  dragKind = kind;
+  dragInterval = setInterval(async () => {
+    if (!dragKind) return;
+    if (state.idx >= state.meta.n_frames - 1) { stopDrag(); return; }
+    await showFrame(state.idx + 1);
+    if (dragKind === "tip" && cursorXY) {
+      applyAt("tip", state.idx, cursorXY);
+    } else if (dragKind === "none") {
+      applyAt("none", state.idx, null);
+    }
+    drawOverlay(); renderTipsList();
+  }, DRAG_TICK_MS);
+}
+
+$("frameImg").addEventListener("contextmenu", (e) => e.preventDefault());
+
+$("frameImg").addEventListener("mousedown", (e) => {
+  if (!state.meta || (e.button !== 0 && e.button !== 2)) return;
+  e.preventDefault();
+  const kind = e.button === 0 ? "tip" : "none";
+  const xy = kind === "tip" ? getVideoXY(e) : null;
+  if (kind === "tip") cursorXY = xy;
+
+  if (state.mode === "range") {
+    applyRange(kind, xy);
+    return;
+  }
+  // single mode
+  applyAt(kind, state.idx, xy);
+  drawOverlay(); renderTipsList();
+  if ($("autoAdvance").checked && state.idx < state.meta.n_frames - 1) {
+    showFrame(state.idx + 1);
+  }
+  startDrag(kind);
+});
+
+$("frameImg").addEventListener("mousemove", (e) => {
+  if (dragKind !== "tip" || !state.meta) return;
+  cursorXY = getVideoXY(e);
+});
+
+window.addEventListener("mouseup", stopDrag);
+window.addEventListener("blur", stopDrag);
+
+$("frameSlider").addEventListener("input", (e) => showFrame(parseInt(e.target.value)));
+$("prevBtn").addEventListener("click", () => showFrame(state.idx - 1));
+$("nextBtn").addEventListener("click", () => showFrame(state.idx + 1));
+$("playBtn").addEventListener("click", () => {
+  state.playing = !state.playing;
+  $("playBtn").textContent = state.playing ? "⏸" : "▶";
+  if (state.playing) {
+    state.playTimer = setInterval(() => {
+      if (state.idx >= state.meta.n_frames - 1) {
+        state.playing = false;
+        clearInterval(state.playTimer);
+        $("playBtn").textContent = "▶";
+        return;
+      }
+      showFrame(state.idx + 1);
+    }, 80);
+  } else {
+    clearInterval(state.playTimer);
+  }
+});
+
+$("markStart").addEventListener("click", () => { state.rangeStart = state.idx; updateRangeLabel(); drawOverlay(); });
+$("markEnd").addEventListener("click", () => { state.rangeEnd = state.idx; updateRangeLabel(); drawOverlay(); });
+$("clearRange").addEventListener("click", () => { state.rangeStart = null; state.rangeEnd = null; updateRangeLabel(); drawOverlay(); });
+
+$("deleteCurrent").addEventListener("click", () => {
+  delete state.tips[String(state.idx)];
+  delete state.noTongue[String(state.idx)];
+  drawOverlay(); renderTipsList();
+});
+$("clearAllTips").addEventListener("click", () => {
+  if (!confirm("Clear all tip + no-tongue annotations for this clip?")) return;
+  state.tips = {}; state.noTongue = {}; drawOverlay(); renderTipsList();
+});
+
+$("gradeSlider").addEventListener("input", (e) => {
+  state.grade = parseInt(e.target.value);
+  $("gradeLabel").textContent = `grade: ${state.grade}`;
+});
+
+$("clipSelect").addEventListener("change", async (e) => {
+  const [subject, stem] = e.target.value.split("/");
+  const c = state.clips.find(x => x.subject === subject && x.stem === stem);
+  if (c) await loadClip(c);
+});
+$("prevClipBtn").addEventListener("click", () => jumpClip(-1));
+$("nextClipBtn").addEventListener("click", () => jumpClip(1));
+
+$("zoomIn").addEventListener("click", () => setZoom(state.zoom * 1.25));
+$("zoomOut").addEventListener("click", () => setZoom(state.zoom / 1.25));
+$("zoom1").addEventListener("click", () => setZoom(1));
+$("zoomFit").addEventListener("click", () => { state.zoom = 1; computeBaseFit(); drawOverlay(); });
+
+$("frameScroll").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  setZoom(state.zoom * factor);
+  drawOverlay();
+}, { passive: false });
+
+async function saveAnnotation() {
+  const obj = {
+    subject: state.current.subject,
+    stem: state.current.stem,
+    task: state.current.task,
+    lazarus_score: state.current.lazarus_score,
+    grade: state.grade,
+    tips: state.tips,
+    no_tongue: state.noTongue,
+  };
+  try {
+    const r = await fetch("/api/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(obj),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      $("saveStatus").textContent = `saved · ${new Date().toLocaleTimeString()}`;
+      $("saveStatus").classList.remove("err");
+      await refreshClips();
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (e) {
+    $("saveStatus").textContent = `save error: ${e.message}`;
+    $("saveStatus").classList.add("err");
+  }
+}
+$("saveBtn").addEventListener("click", saveAnnotation);
+$("saveBtn2").addEventListener("click", saveAnnotation);
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  const step = e.shiftKey ? 10 : 1;
+  if (e.key === "ArrowLeft") { showFrame(state.idx - step); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { showFrame(state.idx + step); e.preventDefault(); }
+  else if (e.key === " ") { $("playBtn").click(); e.preventDefault(); }
+  else if (e.key === "[") { state.rangeStart = state.idx; updateRangeLabel(); drawOverlay(); }
+  else if (e.key === "]") { state.rangeEnd = state.idx; updateRangeLabel(); drawOverlay(); }
+  else if (e.key === "x" || e.key === "X") { $("deleteCurrent").click(); }
+  else if (e.key === "n" || e.key === "N") {
+    const k = String(state.idx);
+    if (state.noTongue[k]) delete state.noTongue[k];
+    else { state.noTongue[k] = true; delete state.tips[k]; }
+    drawOverlay(); renderTipsList();
+    if ($("autoAdvance").checked && state.idx < state.meta.n_frames - 1) showFrame(state.idx + 1);
+  }
+  else if (e.key === "m" || e.key === "M") { setMode(state.mode === "single" ? "range" : "single"); }
+  else if (e.key === "," && e.ctrlKey) { e.preventDefault(); jumpClip(-1); }
+  else if (e.key === "." && e.ctrlKey) { e.preventDefault(); jumpClip(1); }
+  else if (e.key === "+" || e.key === "=") { setZoom(state.zoom * 1.25); drawOverlay(); }
+  else if (e.key === "-" || e.key === "_") { setZoom(state.zoom / 1.25); drawOverlay(); }
+  else if (e.key === "0") { setZoom(1); drawOverlay(); }
+  else if (e.key === "s" || e.key === "S") { if (e.ctrlKey) { e.preventDefault(); saveAnnotation(); } }
+});
+
+window.addEventListener("resize", () => { computeBaseFit(); drawOverlay(); });
+
+loadClips();
+</script>
+</body>
+</html>

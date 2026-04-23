@@ -17,7 +17,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import Ridge
+from sklearn.metrics import cohen_kappa_score
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -58,6 +60,59 @@ def discretize(y_pred: np.ndarray, tasks: np.ndarray) -> np.ndarray:
     return out
 
 
+def report_metrics(name: str, y_true: np.ndarray, y_pred: np.ndarray,
+                   tasks: np.ndarray) -> dict:
+    """Print + return MAE, discrete accuracy, quadratic-weighted kappa."""
+    y_pred = np.clip(y_pred, 0, 100)
+    mae = float(np.mean(np.abs(y_pred - y_true)))
+    disc = discretize(y_pred, tasks)
+    acc = float((disc == y_true).mean())
+    # Quadratic-weighted kappa across all samples (map to nearest bin).
+    try:
+        kappa = float(cohen_kappa_score(y_true.astype(int), disc.astype(int),
+                                        weights="quadratic"))
+    except ValueError:
+        kappa = float("nan")
+    print(f"\n[{name}]  MAE={mae:5.2f}   disc-acc={acc:.2f}   q-kappa={kappa:.2f}")
+    for t in ("latR", "latL", "elev"):
+        m = tasks == t
+        if m.any():
+            t_mae = float(np.mean(np.abs(y_pred[m] - y_true[m])))
+            try:
+                t_kappa = float(cohen_kappa_score(
+                    y_true[m].astype(int), disc[m].astype(int), weights="quadratic"))
+            except ValueError:
+                t_kappa = float("nan")
+            print(f"    {t:5s} n={m.sum():2d}  mae={t_mae:5.2f}  q-kappa={t_kappa:.2f}")
+    return {"mae": mae, "disc_acc": acc, "q_kappa": kappa}
+
+
+def geo_scorer_predictions(df: pd.DataFrame) -> np.ndarray:
+    """Raw geometric scores straight from scoring.py (no learning)."""
+    return df["geo_score"].fillna(df["score"].mean()).values.astype(float)
+
+
+def geo_isotonic_loso(df: pd.DataFrame) -> np.ndarray:
+    """LOSO-calibrated geometric score: isotonic map geo→clinical per fold.
+
+    Handles any monotonic miscalibration (e.g., our scorer tends to saturate
+    at 100 when clinically 75) without fitting a general regressor.
+    """
+    logo = LeaveOneGroupOut()
+    X = df["geo_score"].fillna(df["score"].mean()).values.astype(float).reshape(-1, 1)
+    y = df["score"].values.astype(float)
+    groups = df["subject"].values
+    preds = np.full_like(y, np.nan, dtype=float)
+    for tr, te in logo.split(X, y, groups):
+        if len(np.unique(y[tr])) < 2:
+            preds[te] = y[tr].mean()
+            continue
+        iso = IsotonicRegression(y_min=0, y_max=100, out_of_bounds="clip")
+        iso.fit(X[tr].ravel(), y[tr])
+        preds[te] = iso.predict(X[te].ravel())
+    return preds
+
+
 def loso_cv(df: pd.DataFrame, name: str, factory):
     logo = LeaveOneGroupOut()
     X = df[FEAT_COLS].values
@@ -72,16 +127,8 @@ def loso_cv(df: pd.DataFrame, name: str, factory):
         model.fit(X[tr_idx], y[tr_idx])
         preds[te_idx] = model.predict(X[te_idx])
     preds = np.clip(preds, 0, 100)
-    mae = float(np.mean(np.abs(preds - y)))
-    disc = discretize(preds, df["task"].values)
-    acc = float((disc == y).mean())
-    print(f"\n[{name}]  LOSO MAE = {mae:5.2f}   discrete-accuracy = {acc:.2f}")
-    for t in ("latR", "latL", "elev"):
-        mask = df["task"].values == t
-        if mask.any():
-            t_mae = float(np.mean(np.abs(preds[mask] - y[mask])))
-            print(f"    {t:5s}  n={mask.sum():2d}   mae={t_mae:5.2f}")
-    return preds, mae, acc
+    report_metrics(name, y, preds, df["task"].values)
+    return preds
 
 
 def plot_overview(df: pd.DataFrame):
@@ -179,15 +226,24 @@ def main():
     print(df.groupby(["task", "score"]).size().unstack(fill_value=0))
 
     y = df["score"].values.astype(float)
+    tasks = df["task"].values
     base = np.full_like(y, y.mean())
-    print(f"\n[baseline: constant mean] MAE = {np.mean(np.abs(base - y)):.2f}")
+    report_metrics("baseline: constant mean", y, base, tasks)
 
-    ridge_pred, _, _ = loso_cv(
+    # --- Phase 1: geometric scorers ---
+    geo_raw = geo_scorer_predictions(df)
+    report_metrics("Phase 1 · geometric (raw)", y, geo_raw, tasks)
+
+    geo_iso = geo_isotonic_loso(df)
+    report_metrics("Phase 1 · geometric + LOSO isotonic", y, geo_iso, tasks)
+
+    # --- Existing baselines for comparison ---
+    ridge_pred = loso_cv(
         df,
         "Ridge (landmark + img feats)",
         lambda: Pipeline([("sc", StandardScaler()), ("m", Ridge(alpha=1.0))]),
     )
-    rf_pred, _, _ = loso_cv(
+    rf_pred = loso_cv(
         df,
         "RandomForest (landmark + img feats)",
         lambda: RandomForestRegressor(
@@ -196,13 +252,16 @@ def main():
     )
 
     out = df[["subject", "task", "score"]].copy()
+    out["geo_raw"] = geo_raw
+    out["geo_iso"] = geo_iso
     out["pred_ridge"] = ridge_pred
     out["pred_rf"] = rf_pred
     out.to_csv(OUT_DIR / "predictions.csv", index=False)
     print(f"\n→ {OUT_DIR / 'predictions.csv'}")
 
     plot_overview(df)
-    plot_predictions(df, {"Ridge": ridge_pred, "RandomForest": rf_pred})
+    plot_predictions(df, {"Geo (raw)": geo_raw, "Geo+iso": geo_iso,
+                          "Ridge": ridge_pred, "RandomForest": rf_pred})
     plot_crop_gallery(df)
     print("\nDone.")
 

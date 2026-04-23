@@ -19,10 +19,14 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from poc import scoring
+from poc.visibility_clf import MODEL_PATH as VIS_MODEL_PATH, load_predictor
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 OUT_DIR = ROOT / "poc" / "out"
 CROPS_DIR = OUT_DIR / "crops"
+MASKS_DIR = OUT_DIR / "masks"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 CROPS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -196,7 +200,7 @@ def image_features(crop_bgr):
     }
 
 
-def parse_clip(meta_path: Path, subject_dir: Path):
+def parse_clip(meta_path: Path, subject_dir: Path, visibility_fn=None):
     m = META_RE.match(meta_path.name)
     if not m:
         return None
@@ -215,7 +219,12 @@ def parse_clip(meta_path: Path, subject_dir: Path):
             return None
     except Exception:
         return None
-        
+    # cameraFlipped in the metadata refers to the UI selfie-mirror (CSS
+    # `transform: scaleX(-1)`) for display only. The stored video + MediaPipe
+    # landmarks are in RAW camera space where subject-right = image-left.
+    # So we treat mirrored as False for scoring, regardless of the flag.
+    mirrored = False
+
     video_frames = _load_video_frames(video_path)
     if not video_frames:
         return None
@@ -229,9 +238,20 @@ def parse_clip(meta_path: Path, subject_dir: Path):
     crop = crop_mouth(frame, sync_lm, task)
     if crop is None:
         return None
-        
+
     crop_name = f"{subject_dir.name}_{task}_{ts}_s{score}.png"
     cv2.imwrite(str(CROPS_DIR / crop_name), crop)
+
+    geo = scoring.score_clip(video_frames, lm_frames, task,
+                             mirrored=mirrored, visibility_fn=visibility_fn)
+
+    mask_geo = {"lat_score": None, "elev_score": None,
+                "n_valid": 0, "mean_tip_conf": 0.0, "mean_vis_prob": 0.0}
+    mask_path = MASKS_DIR / f"{subject_dir.name}_{task}_{ts}_s{score}.npz"
+    if mask_path.exists():
+        d = np.load(mask_path)
+        mask_geo = scoring.score_clip_with_masks(
+            video_frames, lm_frames, d["masks"], task, mirrored=mirrored)
 
     row = {
         "subject": subject_dir.name,
@@ -241,6 +261,18 @@ def parse_clip(meta_path: Path, subject_dir: Path):
         "video_path": str(video_path.relative_to(ROOT)),
         "n_frames": len(lm_frames),
         "best_frame_idx": best_idx,
+        "mirrored": int(mirrored),
+        "lat_score": geo["lat_score"],
+        "elev_score": geo["elev_score"],
+        "geo_score": geo["lat_score"] if task.startswith("lat") else geo["elev_score"],
+        "n_valid_frames": geo["n_valid"],
+        "mean_tip_conf": geo["mean_tip_conf"],
+        "mean_vis_prob": geo["mean_vis_prob"],
+        "mask_lat_score": mask_geo["lat_score"],
+        "mask_elev_score": mask_geo["elev_score"],
+        "mask_score": mask_geo["lat_score"] if task.startswith("lat") else mask_geo["elev_score"],
+        "mask_n_valid": mask_geo["n_valid"],
+        "mask_mean_conf": mask_geo["mean_tip_conf"],
     }
     row.update(landmark_features(sync_lm))
     row.update(image_features(crop))
@@ -248,11 +280,18 @@ def parse_clip(meta_path: Path, subject_dir: Path):
 
 
 def main():
+    visibility_fn = None
+    if VIS_MODEL_PATH.exists():
+        visibility_fn = load_predictor()
+        print(f"[visibility] using trained model at {VIS_MODEL_PATH}")
+    else:
+        print("[visibility] no trained model — falling back to tip-confidence proxy")
+
     rows = []
     skipped = []
     for subject_dir in sorted(p for p in DATA_DIR.iterdir() if p.is_dir()):
         for meta_path in sorted(subject_dir.glob("*_meta.json")):
-            row = parse_clip(meta_path, subject_dir)
+            row = parse_clip(meta_path, subject_dir, visibility_fn=visibility_fn)
             tag = f"{subject_dir.name}/{meta_path.stem}"
             if row is None:
                 skipped.append(tag)
