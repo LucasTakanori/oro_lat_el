@@ -101,8 +101,15 @@
   <aside class="panel">
     <h3>Clip grade</h3>
     <div class="field">
-      <label><span id="gradeLabel">grade: 0</span> &middot; Lazarus reference: <span id="lazarusRef">—</span></label>
-      <input type="range" id="gradeSlider" min="0" max="100" value="0" />
+      <label>Grade (your score)</label>
+      <div class="row" style="gap:8px; flex-wrap:nowrap;">
+        <input type="range" id="gradeSlider" min="0" max="100" value="0" style="flex:1;" />
+        <input type="number" id="gradeNum" min="0" max="100" value="0" style="width:60px; background:#222; color:#eee; border:1px solid #444; border-radius:4px; padding:4px 6px; font:inherit;" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Lazarus score (reference from recording — edit to correct)</label>
+      <input type="number" id="lazarusEdit" min="0" max="100" value="0" style="width:80px; background:#222; color:#eee; border:1px solid #444; border-radius:4px; padding:4px 6px; font:inherit;" />
     </div>
 
     <h3>Tip placement</h3>
@@ -219,9 +226,9 @@ async function jumpClip(delta) {
 }
 
 async function loadClip(c) {
+  if (state.current) await saveAnnotation();
   state.current = c;
   $("clipInfo").textContent = `${c.subject} / ${c.task} / lazarus=${c.lazarus_score}`;
-  $("lazarusRef").textContent = c.lazarus_score;
   state.meta = await fetchJSON(`/api/meta?subject=${encodeURIComponent(c.subject)}&stem=${encodeURIComponent(c.stem)}`);
   $("frameSlider").max = state.meta.n_frames - 1;
   const ann = await fetchJSON(`/api/annotation?subject=${encodeURIComponent(c.subject)}&stem=${encodeURIComponent(c.stem)}`);
@@ -229,7 +236,8 @@ async function loadClip(c) {
   state.noTongue = ann.no_tongue || {};
   state.grade = ann.grade ?? c.lazarus_score;
   $("gradeSlider").value = state.grade;
-  $("gradeLabel").textContent = `grade: ${state.grade}`;
+  $("gradeNum").value = state.grade;
+  $("lazarusEdit").value = ann.lazarus_score ?? c.lazarus_score;
   state.idx = 0;
   state.rangeStart = null;
   state.rangeEnd = null;
@@ -393,12 +401,14 @@ function startDrag(kind) {
   dragInterval = setInterval(async () => {
     if (!dragKind) return;
     if (state.idx >= state.meta.n_frames - 1) { stopDrag(); return; }
-    await showFrame(state.idx + 1);
+    // Apply to current frame first, then advance — avoids skipping a frame
+    // when combined with the auto-advance that already happened on mousedown.
     if (dragKind === "tip" && cursorXY) {
       applyAt("tip", state.idx, cursorXY);
     } else if (dragKind === "none") {
       applyAt("none", state.idx, null);
     }
+    await showFrame(state.idx + 1);
     drawOverlay(); renderTipsList();
   }, DRAG_TICK_MS);
 }
@@ -470,7 +480,13 @@ $("clearAllTips").addEventListener("click", () => {
 
 $("gradeSlider").addEventListener("input", (e) => {
   state.grade = parseInt(e.target.value);
-  $("gradeLabel").textContent = `grade: ${state.grade}`;
+  $("gradeNum").value = state.grade;
+});
+$("gradeNum").addEventListener("input", (e) => {
+  const v = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+  state.grade = v;
+  $("gradeSlider").value = v;
+  $("gradeNum").value = v;
 });
 
 $("clipSelect").addEventListener("change", async (e) => {
@@ -495,11 +511,12 @@ $("frameScroll").addEventListener("wheel", (e) => {
 }, { passive: false });
 
 async function saveAnnotation() {
+  const lazarusVal = parseInt($("lazarusEdit").value) || state.current.lazarus_score;
   const obj = {
     subject: state.current.subject,
     stem: state.current.stem,
     task: state.current.task,
-    lazarus_score: state.current.lazarus_score,
+    lazarus_score: lazarusVal,
     grade: state.grade,
     tips: state.tips,
     no_tongue: state.noTongue,
