@@ -10,3 +10,17 @@ cloudflared.deb
 *.log
 *.tmp
 *.swp
+poc/out/
+poc/overlays/
+poc/*.png
+image.png
+output.png
+
+# datasets and model weights
+dataset/
+dataset_*/
+runs/
+*.pt
+*.mlpackage
+*.bin
+yolo*.pt
