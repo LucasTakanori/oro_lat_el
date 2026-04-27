@@ -117,6 +117,7 @@ def main() -> None:
     ap.add_argument("--val-subject",  default=None, help="Run only this LOSO fold")
     ap.add_argument("--run-name",     default=None, help="Custom run name (default: loso_<subject>)")
     ap.add_argument("--dataset-dir",  default=None, help="Path to dataset dir (default: <root>/dataset)")
+    ap.add_argument("--yaml",         default=None, help="Direct path to a dataset YAML (bypasses LOSO lookup)")
     ap.add_argument("--epochs",       type=int, default=20)
     ap.add_argument("--imgsz",        type=int, default=640)
     ap.add_argument("--no-wandb",     action="store_true", help="Disable wandb logging")
@@ -134,8 +135,14 @@ def main() -> None:
             print(f"wandb login failed ({e}), continuing without wandb")
             use_wandb = False
 
-    folds = _find_yamls(args.val_subject, dataset_dir)
-    print(f"Training {len(folds)} LOSO fold(s): {[s for s, _ in folds]}")
+    if args.yaml:
+        yaml_path = Path(args.yaml)
+        run_name  = args.run_name or yaml_path.stem
+        folds     = [(run_name, yaml_path)]
+    else:
+        folds = _find_yamls(args.val_subject, dataset_dir)
+
+    print(f"Training {len(folds)} fold(s): {[s for s, _ in folds]}")
     print(f"Pipeline : {pipeline}")
     print(f"wandb    : {'enabled → project=' + WANDB_PROJECT if use_wandb else 'disabled'}")
 
@@ -145,7 +152,7 @@ def main() -> None:
         print(f"FOLD: val={val_subj}  run={run_name}  yaml={yaml_path.name}")
         print(f"{'='*60}")
         train_fold(yaml_path, run_name, args.epochs, args.imgsz, pipeline, use_wandb)
-        print(f"FOLD {val_subj} done → {RUNS_DIR}/{run_name}")
+        print(f"Done → {RUNS_DIR}/{run_name}")
 
 
 if __name__ == "__main__":
