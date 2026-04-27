@@ -1,14 +1,15 @@
-"""Upload best trained model to Hugging Face Hub (private repo).
+"""Upload trained models to Hugging Face Hub (private repo).
 
 Creates or updates a private HF repo with:
-  - model weights (best.pt)
-  - CoreML export (best.mlpackage) if present
+  - best model weights at root (best.pt)
+  - all full LOSO fold weights under loso_folds/<subject>/best.pt
   - model card (README.md) auto-generated from training metadata
 
 Run:
-    python -m poc.upload_model_hf                           # uses default best model
+    python -m poc.upload_model_hf                             # upload best model only
     python -m poc.upload_model_hf --run loso_Miquel_clahe_unsharp_v2
-    python -m poc.upload_model_hf --run loso_Miquel_clahe_unsharp_v2 --repo myuser/orosense-tip
+    python -m poc.upload_model_hf --all-loso                  # upload all 30 LOSO folds
+    python -m poc.upload_model_hf --all-loso --run loso_Miquel_clahe_unsharp_v2
 """
 from __future__ import annotations
 
@@ -131,51 +132,105 @@ for full training code and annotation tools.
 """
 
 
+def _upload_single(api, run_name: str, repo_id: str,
+                   path_in_repo_prefix: str = "") -> None:
+    """Upload weights + artefacts for one run into repo at optional subfolder prefix."""
+    run_dir = RUNS_DIR / run_name
+    weights = run_dir / "weights" / "best.pt"
+    if not weights.exists():
+        print(f"  SKIP {run_name} — no weights found")
+        return
+
+    prefix = path_in_repo_prefix.rstrip("/") + "/" if path_in_repo_prefix else ""
+
+    print(f"  [{run_name}] uploading best.pt → {prefix}best.pt")
+    api.upload_file(
+        path_or_fileobj=str(weights),
+        path_in_repo=f"{prefix}best.pt",
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message=f"Add weights: {run_name}",
+    )
+
+    for fname in ("results.csv", "args.yaml"):
+        fpath = run_dir / fname
+        if fpath.exists():
+            api.upload_file(
+                path_or_fileobj=str(fpath),
+                path_in_repo=f"{prefix}{fname}",
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=f"Add {fname}: {run_name}",
+            )
+
+    for img in ("val_batch0_pred.jpg", "results.png", "confusion_matrix_normalized.png"):
+        fpath = run_dir / img
+        if fpath.exists():
+            api.upload_file(
+                path_or_fileobj=str(fpath),
+                path_in_repo=f"{prefix}{img}",
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=f"Add {img}: {run_name}",
+            )
+
+
+def _full_loso_runs() -> list[str]:
+    """Return the 30 clean LOSO fold run names (no experimental suffixes)."""
+    runs = []
+    for d in sorted(RUNS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        name = d.name
+        # keep only loso_<subject> — skip anything with extra _vN / _clahe / _gamma / -2
+        if not name.startswith("loso_"):
+            continue
+        suffix = name[len("loso_"):]
+        # skip experimental runs
+        if any(x in suffix for x in ["_clahe", "_gamma", "_3kpt", "_v1", "_v2", "-2"]):
+            continue
+        if (d / "weights" / "best.pt").exists():
+            runs.append(name)
+    return runs
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run",  default=DEFAULT_RUN,  help="Run name under runs/tip/")
-    ap.add_argument("--repo", default=DEFAULT_REPO, help="HF repo name (without username)")
+    ap.add_argument("--run",       default=DEFAULT_RUN,  help="Best/single run to upload at repo root")
+    ap.add_argument("--repo",      default=DEFAULT_REPO, help="HF repo name (without username)")
+    ap.add_argument("--all-loso",  action="store_true",  help="Also upload all 30 LOSO folds under loso_folds/")
     ap.add_argument("--export-coreml", action="store_true", help="Export CoreML before upload")
     args = ap.parse_args()
 
     from huggingface_hub import HfApi, login
 
-    # ── authenticate ─────────────────────────────────────────────────────────
-    login()   # prompts for token if not already cached
-    api = HfApi()
-    user = api.whoami()["name"]
+    login()   # prompts for token if not cached; use `hf auth login` in terminal first
+    api     = HfApi()
+    user    = api.whoami()["name"]
     repo_id = f"{user}/{args.repo}"
-
-    # ── locate weights ────────────────────────────────────────────────────────
-    run_dir    = RUNS_DIR / args.run
-    weights    = run_dir / "weights" / "best.pt"
-    if not weights.exists():
-        raise FileNotFoundError(f"No weights at {weights}")
 
     # ── create private repo (idempotent) ──────────────────────────────────────
     api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
-    print(f"Repo: https://huggingface.co/{repo_id}  (private)")
+    print(f"Repo: https://huggingface.co/{repo_id}  (private)\n")
 
-    # ── optional CoreML export ────────────────────────────────────────────────
+    # ── best model at repo root ───────────────────────────────────────────────
+    run_dir = RUNS_DIR / args.run
+    weights = run_dir / "weights" / "best.pt"
+    if not weights.exists():
+        raise FileNotFoundError(f"No weights at {weights}")
+
+    # optional CoreML export
     coreml_path = run_dir / "weights" / "best.mlpackage"
     if args.export_coreml and not coreml_path.exists():
         print("Exporting CoreML...")
         from ultralytics import YOLO
         YOLO(str(weights)).export(format="coreml", imgsz=640, nms=True)
 
-    # ── upload weights ────────────────────────────────────────────────────────
-    print(f"Uploading {weights.name} ...")
-    api.upload_file(
-        path_or_fileobj=str(weights),
-        path_in_repo="best.pt",
-        repo_id=repo_id,
-        repo_type="model",
-        commit_message=f"Add weights: {args.run}",
-    )
+    print(f"=== Best model: {args.run} → root ===")
+    _upload_single(api, args.run, repo_id, path_in_repo_prefix="")
 
-    # ── upload CoreML if present ──────────────────────────────────────────────
     if coreml_path.exists():
-        print(f"Uploading {coreml_path.name} ...")
+        print(f"  Uploading best.mlpackage ...")
         api.upload_folder(
             folder_path=str(coreml_path),
             path_in_repo="best.mlpackage",
@@ -184,32 +239,7 @@ def main() -> None:
             commit_message="Add CoreML export",
         )
 
-    # ── upload training artefacts ─────────────────────────────────────────────
-    for fname in ("results.csv", "args.yaml"):
-        fpath = run_dir / fname
-        if fpath.exists():
-            api.upload_file(
-                path_or_fileobj=str(fpath),
-                path_in_repo=fname,
-                repo_id=repo_id,
-                repo_type="model",
-                commit_message=f"Add {fname}",
-            )
-
-    # ── upload confusion matrix / curves if present ──────────────────────────
-    for img in (run_dir / "val_batch0_pred.jpg",
-                run_dir / "results.png",
-                run_dir / "confusion_matrix_normalized.png"):
-        if img.exists():
-            api.upload_file(
-                path_or_fileobj=str(img),
-                path_in_repo=img.name,
-                repo_id=repo_id,
-                repo_type="model",
-                commit_message=f"Add {img.name}",
-            )
-
-    # ── write model card ──────────────────────────────────────────────────────
+    # ── model card ────────────────────────────────────────────────────────────
     metrics   = _read_best_metrics(run_dir)
     card_text = _make_model_card(args.run, metrics, repo_id)
     card_path = Path("/tmp/hf_model_card_README.md")
@@ -222,7 +252,16 @@ def main() -> None:
         commit_message="Update model card",
     )
 
-    print(f"\nDone. Model live at: https://huggingface.co/{repo_id}")
+    # ── all LOSO folds ────────────────────────────────────────────────────────
+    if args.all_loso:
+        loso_runs = _full_loso_runs()
+        print(f"\n=== Uploading {len(loso_runs)} LOSO folds → loso_folds/ ===")
+        for run_name in loso_runs:
+            subject = run_name[len("loso_"):]
+            _upload_single(api, run_name, repo_id,
+                           path_in_repo_prefix=f"loso_folds/{subject}")
+
+    print(f"\nDone → https://huggingface.co/{repo_id}")
 
 
 if __name__ == "__main__":
